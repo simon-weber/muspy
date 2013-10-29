@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with muspy.  If not, see <http://www.gnu.org/licenses/>.
 
-from datetime import date
+from datetime import date, timedelta
 import re
 
 from django.contrib import messages
@@ -24,6 +24,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseNotFound
 from django.shortcuts import redirect, render
 from django.views.decorators.cache import cache_control
+from icalendar import Calendar, Event
 
 from settings import LOGIN_REDIRECT_URL
 
@@ -310,6 +311,53 @@ def feed(request):
             'url': request.build_absolute_uri(),
             'root': request.build_absolute_uri('/')
             }, content_type='application/atom+xml')
+
+# copy-paste from feed -- you probably want to factor that out?
+def ical(request):
+    user_id = request.GET.get('id', '')
+    if user_id.isdigit():
+        profile = UserProfile.get_by_legacy_id(user_id)
+        if profile:
+            return redirect('/ical?id=' + profile.user.username, permanent=True)
+
+    profile = UserProfile.get_by_username(user_id)
+    if not profile:
+        return HttpResponseNotFound()
+
+    LIMIT = 40
+    releases = list(ReleaseGroup.get(user=profile.user, limit=LIMIT, offset=0, feed=True))
+
+    cal = Calendar()
+    cal.add('prodid', '-//Muspy releases//mxm.dk//')
+    cal.add('version', '2.0')
+
+    for r in releases:
+        event = Event()
+        event.add('summary', "{} - {}".format(r.artist.name, r.name))
+
+        year = r.date // 10000
+
+        # month/day aren't always present
+        month = (r.date // 100) % 100
+        if month == 0:
+            continue
+
+        day = r.date % 100
+        if day == 0:
+            # arbitrarily set the release towards the end of the month.
+            # hopefully, the date will be clarified before then, but this
+            # will ensure it's not missed on the calendar
+            day = 28
+
+        event_date = date(year, month, day)
+
+        event.add('dtstart', event_date)
+        event.add('dtend', event_date + timedelta(days=1))
+
+        #event['uid'] = '20050115T101010/27346262376@mxm.dk'
+        cal.add_component(event)
+
+    return HttpResponse(cal.to_ical(), content_type='text/calendar')
 
 def forbidden(request):
     return HttpResponseForbidden()
